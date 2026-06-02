@@ -25,3 +25,14 @@ jobs:
       - name: Run signal
         run: |
           python weekly_signal.py
+
+      - name: Commit signal history
+        run: |
+          git config --global user.name github-actions
+          git config --global user.email github-actions@github.com
+
+          git add signal_history.csv
+
+          git commit -m "update signal history" || echo "No changes"
+
+          git push
