@@ -282,20 +282,17 @@ def evaluate_history():
 
     hist = pd.read_csv("signal_history.csv")
 
-    if len(hist) == 0:
-        return
-
     results = []
 
     for _, row in hist.iterrows():
 
-        ticker = row["Ticker"]
-
         try:
+
+            ticker = row["Ticker"]
 
             px = yf.download(
                 ticker,
-                start=row["date"],
+                start=row["signal_date"],
                 progress=False,
                 auto_adjust=False
             )
@@ -303,22 +300,21 @@ def evaluate_history():
             if len(px) < 6:
                 continue
 
-            entry = row["entry_price"]
-
+            entry = float(row["entry_price"])
             exit_price = float(px["Close"].iloc[5])
 
             ret = (exit_price / entry) - 1
 
             results.append({
-                "date": row["date"],
+                "signal_date": row["signal_date"],
                 "Ticker": ticker,
                 "entry_price": entry,
                 "exit_price": exit_price,
                 "return": ret
             })
 
-        except:
-            pass
+        except Exception as e:
+            print(e)
 
     if len(results) == 0:
         return
@@ -330,7 +326,7 @@ def evaluate_history():
         index=False
     )
 
-    return perf
+    print("performance rows =", len(perf))
 
 def performance_report():
 
