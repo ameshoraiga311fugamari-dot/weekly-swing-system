@@ -1,45 +1,42 @@
 name: Weekly Swing Signal
 
 on:
-schedule:
-- cron: '0 22 * * 0'
-workflow_dispatch:
+  schedule:
+    - cron: '0 22 * * 0'
+  workflow_dispatch:
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-run-signal:
+  run-signal:
+    runs-on: ubuntu-latest
 
-runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-- uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-- name: Setup Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: "3.12"
+      - name: Run signal
+        run: |
+          python weekly_signal.py
 
-- name: Install packages
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
+      - name: Commit history
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
 
-- name: Run signal
-  run: |
-    python weekly_signal.py
+          git add signal_history.csv
+          git add performance.csv
 
-- name: Commit history
-  run: |
-    git config --global user.name "github-actions"
-    git config --global user.email "actions@github.com"
+          git diff --cached --quiet || git commit -m "update reports"
 
-    git add signal_history.csv
-    git add performance.csv
-
-    git diff --cached --quiet || git commit -m "update reports"
-
-    git push
-
+          git push
