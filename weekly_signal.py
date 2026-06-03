@@ -282,6 +282,9 @@ def evaluate_history():
 
     hist = pd.read_csv("signal_history.csv")
 
+    if len(hist) == 0:
+        return
+
     results = []
 
     for _, row in hist.iterrows():
@@ -301,9 +304,14 @@ def evaluate_history():
                 continue
 
             entry = float(row["entry_price"])
-            exit_price = float(px["Close"].iloc[5])
 
-            ret = (exit_price / entry) - 1
+            exit_price = float(
+                px["Close"].iloc[5]
+            )
+
+            ret = (
+                exit_price / entry
+            ) - 1
 
             results.append({
                 "signal_date": row["signal_date"],
@@ -314,9 +322,19 @@ def evaluate_history():
             })
 
         except Exception as e:
-            print(e)
+
+            print(
+                "EVAL ERROR:",
+                ticker,
+                e
+            )
 
     if len(results) == 0:
+
+        print(
+            "No performance data"
+        )
+
         return
 
     perf = pd.DataFrame(results)
@@ -326,7 +344,12 @@ def evaluate_history():
         index=False
     )
 
-    print("performance rows =", len(perf))
+    print(
+        "performance rows =",
+        len(perf)
+    )
+
+    return perf
 
 def performance_report():
 
