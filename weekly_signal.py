@@ -1,26 +1,18 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Tue Jun  2 22:42:00 2026
-
-@author: amesh
-"""
-
-# -*- coding: utf-8 -*-
 
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from lightgbm import LGBMClassifier
+from datetime import datetime
+import os
 
 
 # =========================
 # 1. 銘柄
 # =========================
 def get_tickers():
-    return [
-        "7203.T","6758.T","9984.T","9432.T",
-        "6861.T","8035.T","4063.T","8306.T"
-    ]
+    return pd.read_csv("tickers.csv")["Ticker"].tolist()
 
 
 # =========================
@@ -30,39 +22,38 @@ def download_data(tickers, start="2018-01-01"):
 
     dfs = []
 
-    for ticker in tickers:
+    for t in tickers:
 
-        df = yf.download(
-            ticker,
-            start=start,
-            progress=False,
-            auto_adjust=False
-        )
+        try:
 
-        if df is None or df.empty:
+            df = yf.download(
+                t,
+                start=start,
+                progress=False,
+                auto_adjust=False
+            )
+
+            if df.empty:
+                continue
+
+            df = df.reset_index()
+
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df = df[["Date", "Close"]].copy()
+
+            df["Close"] = pd.to_numeric(
+                df["Close"],
+                errors="coerce"
+            )
+
+            df["Ticker"] = t
+
+            dfs.append(df)
+
+        except:
             continue
-
-        df = df.reset_index()
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        if "Close" not in df.columns:
-            continue
-
-        df = df[["Date", "Close"]].copy()
-
-        df["Close"] = pd.to_numeric(
-            df["Close"],
-            errors="coerce"
-        )
-
-        df["Ticker"] = ticker
-
-        dfs.append(df)
-
-    if len(dfs) == 0:
-        raise ValueError("データ取得失敗")
 
     return pd.concat(dfs, ignore_index=True)
 
@@ -78,17 +69,10 @@ def create_features(df):
 
     g = df.groupby("Ticker")["Close"]
 
-    df["ret_1"] = g.pct_change(
-        fill_method=None
-    )
+    df["ret_1"] = g.pct_change(fill_method=None)
 
     df["ret_5"] = g.pct_change(
         5,
-        fill_method=None
-    )
-
-    df["ret_20"] = g.pct_change(
-        20,
         fill_method=None
     )
 
@@ -100,22 +84,18 @@ def create_features(df):
         lambda x: x.rolling(60).mean()
     )
 
-    df["ma_ratio"] = (
-        df["ma20"] / df["ma60"] - 1
-    )
-
     df["trend"] = (
         df["ma20"] > df["ma60"]
     ).astype(int)
 
-    df["vol20"] = g.transform(
+    df["volatility"] = g.transform(
         lambda x:
         x.pct_change(fill_method=None)
-         .rolling(20)
-         .std()
+        .rolling(20)
+        .std()
     )
 
-    # 5営業日後リターン
+    # 1週間後リターン
     df["future_ret"] = (
         g.pct_change(
             5,
@@ -124,13 +104,8 @@ def create_features(df):
         .shift(-5)
     )
 
-    # 市場平均超えターゲット
-    market_ret = df.groupby("Date")[
-        "future_ret"
-    ].transform("mean")
-
     df["target"] = (
-        df["future_ret"] > market_ret
+        df["future_ret"] > 0
     ).astype(int)
 
     df = df.replace(
@@ -151,10 +126,8 @@ def train_model(df):
     features = [
         "ret_1",
         "ret_5",
-        "ret_20",
         "trend",
-        "vol20",
-        "ma_ratio"
+        "volatility"
     ]
 
     train = df[
@@ -162,9 +135,8 @@ def train_model(df):
     ]
 
     model = LGBMClassifier(
-        n_estimators=500,
-        learning_rate=0.03,
-        num_leaves=31,
+        n_estimators=300,
+        learning_rate=0.05,
         random_state=42
     )
 
@@ -177,96 +149,43 @@ def train_model(df):
 
 
 # =========================
-# 5. EV統計
+# 5. EV
 # =========================
-def build_ev_stats(df):
+def build_ev(latest, df):
 
-    rows = []
-
-    for ticker, grp in df.groupby("Ticker"):
-
-        x = grp["future_ret"]
-
-        mu = x.mean()
-
-        sigma = x.std()
-
-        win_rate = (x > 0).mean()
-
-        wins = x[x > 0]
-        losses = x[x < 0]
-
-        avg_win = (
-            wins.mean()
-            if len(wins) > 0
-            else 0
+    stats = (
+        df.groupby("Ticker")["future_ret"]
+        .agg(["mean", "std"])
+        .rename(
+            columns={
+                "mean": "mu",
+                "std": "sigma"
+            }
         )
-
-        avg_loss = (
-            abs(losses.mean())
-            if len(losses) > 0
-            else 0
-        )
-
-        rows.append([
-            ticker,
-            mu,
-            sigma,
-            win_rate,
-            avg_win,
-            avg_loss
-        ])
-
-    stats = pd.DataFrame(
-        rows,
-        columns=[
-            "Ticker",
-            "mu",
-            "sigma",
-            "win_rate",
-            "avg_win",
-            "avg_loss"
-        ]
-    )
-
-    return stats
-
-
-# =========================
-# 6. シグナル
-# =========================
-def generate_signal(
-    df,
-    model,
-    features,
-    stats
-):
-
-    latest = (
-        df.sort_values("Date")
-          .groupby("Ticker")
-          .tail(1)
-          .copy()
-    )
-
-    latest["model_prob"] = (
-        model.predict_proba(
-            latest[features]
-        )[:, 1]
     )
 
     latest = latest.merge(
         stats,
-        on="Ticker",
+        left_on="Ticker",
+        right_index=True,
         how="left"
+    )
+
+    latest["mu"] = (
+        latest["mu"]
+        .fillna(0)
+    )
+
+    latest["sigma"] = (
+        latest["sigma"]
+        .fillna(
+            latest["sigma"].median()
+        )
     )
 
     latest["expected_value"] = (
         latest["model_prob"]
-        * latest["avg_win"]
-        -
-        (1 - latest["model_prob"])
-        * latest["avg_loss"]
+        * latest["mu"]
     )
 
     latest["score"] = (
@@ -275,11 +194,38 @@ def generate_signal(
         (latest["sigma"] + 1e-6)
     )
 
-    # ロング専用フィルタ
+    return latest
+
+
+# =========================
+# 6. シグナル
+# =========================
+def generate_signal(
+    df,
+    model,
+    features
+):
+
+    latest = (
+        df.sort_values("Date")
+        .groupby("Ticker")
+        .tail(1)
+        .copy()
+    )
+
+    latest["model_prob"] = (
+        model.predict_proba(
+            latest[features]
+        )[:, 1]
+    )
+
+    latest = build_ev(
+        latest,
+        df
+    )
+
     latest = latest[
-        (latest["model_prob"] > 0.55)
-        &
-        (latest["score"] > 0)
+        latest["model_prob"] > 0.50
     ]
 
     latest = latest.sort_values(
@@ -293,7 +239,139 @@ def generate_signal(
 
 
 # =========================
-# 7. 実行
+# 7. 履歴保存
+# =========================
+def save_history(buy):
+
+    today = datetime.today().strftime("%Y-%m-%d")
+
+    history = pd.DataFrame({
+        "signal_date": today,
+        "Ticker": buy["Ticker"],
+        "entry_price": buy["Close"],
+        "model_prob": buy["model_prob"],
+        "expected_value": buy["expected_value"],
+        "score": buy["score"]
+    })
+
+    file = "signal_history.csv"
+
+    if os.path.exists(file):
+
+        old = pd.read_csv(file)
+
+        history = pd.concat(
+            [old, history],
+            ignore_index=True
+        )
+
+    history.to_csv(
+        file,
+        index=False
+    )
+
+    print("history rows =", len(history))
+    print(history.head())
+
+def evaluate_history():
+
+    import os
+
+    if not os.path.exists("signal_history.csv"):
+        return
+
+    hist = pd.read_csv("signal_history.csv")
+
+    if len(hist) == 0:
+        return
+
+    results = []
+
+    for _, row in hist.iterrows():
+
+        ticker = row["Ticker"]
+
+        try:
+
+            px = yf.download(
+                ticker,
+                start=row["date"],
+                progress=False,
+                auto_adjust=False
+            )
+
+            if len(px) < 6:
+                continue
+
+            entry = row["entry_price"]
+
+            exit_price = float(px["Close"].iloc[5])
+
+            ret = (exit_price / entry) - 1
+
+            results.append({
+                "date": row["date"],
+                "Ticker": ticker,
+                "entry_price": entry,
+                "exit_price": exit_price,
+                "return": ret
+            })
+
+        except:
+            pass
+
+    if len(results) == 0:
+        return
+
+    perf = pd.DataFrame(results)
+
+    perf.to_csv(
+        "performance.csv",
+        index=False
+    )
+
+    return perf
+
+def performance_report():
+
+    import os
+
+    if not os.path.exists("performance.csv"):
+        return
+
+    perf = pd.read_csv("performance.csv")
+
+    if len(perf) == 0:
+        return
+
+    avg_ret = perf["return"].mean()
+
+    win_rate = (
+        perf["return"] > 0
+    ).mean()
+
+    cum_ret = (
+        (1 + perf["return"])
+        .prod() - 1
+    )
+
+    print("\n=========================")
+    print("PERFORMANCE REPORT")
+    print("=========================\n")
+
+    print(
+        f"平均リターン : {avg_ret:.2%}"
+    )
+
+    print(
+        f"勝率 : {win_rate:.2%}"
+    )
+
+    print(
+        f"累積リターン : {cum_ret:.2%}"
+    )
+# =========================
+# 8. 実行
 # =========================
 df = download_data(
     get_tickers()
@@ -303,49 +381,37 @@ df = create_features(df)
 
 model, features = train_model(df)
 
-stats = build_ev_stats(df)
-
 all_sig, buy = generate_signal(
     df,
     model,
-    features,
-    stats
+    features
 )
 
+save_history(buy)
+
+evaluate_history()
+
+performance_report()
 
 # =========================
-# 8. 出力
+# 9. 出力
 # =========================
 print("\n=========================")
 print("WEEKLY SWING SIGNAL")
 print("=========================\n")
 
-print("【買い推奨 TOP】")
+cols = [
+    "Ticker",
+    "model_prob",
+    "expected_value",
+    "score",
+    "Close"
+]
 
-print(
-    buy[
-        [
-            "Ticker",
-            "model_prob",
-            "expected_value",
-            "score",
-            "Close"
-        ]
-    ]
-)
+print("【買い推奨 TOP】")
+print(buy[cols])
 
 print("\n=========================\n")
 
 print("【全ランキング】")
-
-print(
-    all_sig[
-        [
-            "Ticker",
-            "model_prob",
-            "expected_value",
-            "score",
-            "Close"
-        ]
-    ]
-)
+print(all_sig[cols])
