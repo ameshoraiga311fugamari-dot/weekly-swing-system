@@ -5,6 +5,9 @@ schedule:
 - cron: '0 22 * * 0'
 workflow_dispatch:
 
+permissions:
+contents: write
+
 jobs:
 run-signal:
 
@@ -35,6 +38,7 @@ steps:
 
     git add signal_history.csv
 
-    git commit -m "update history" || echo "No changes"
+    git diff --cached --quiet || git commit -m "update signal history"
 
     git push
+
